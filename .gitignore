@@ -1,0 +1,13 @@
+# =========================================================================
+# CMake Build directories and generated files
+# =========================================================================
+build/
+CMakeLists.txt.user
+CMakeCache.txt
+CMakeFiles/
+CMakeSettings.json
+CMakeUserPresets.json
+CTestTestfile.cmake
+Makefile
+cmake_install.cmake
+install_manifest.txt
