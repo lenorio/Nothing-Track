@@ -22,3 +22,6 @@ Nothing (PC) Unofficial is a lightweight, native Windows utility (C++) that inte
 * Built-in or external USB Bluetooth adapter supporting BLE
 * Windows 10 (Build 19041 and above) or Windows 11
 
+## Credits
+- [RapidZapper](https://nothing.community/u/RapidZapper) - Original source of PC (EarPC/EarWeb)
+- [DerrenGoneDigital](https://twitter.com/DerrenDigital) - Logo and assets in (EarPC/EarWeb)
