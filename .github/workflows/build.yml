@@ -1,0 +1,69 @@
+name: Build & Release NothingTrack
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    name: Build Windows x64
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup MSVC & CMake
+        uses: cmake-tools/setup-cmake@v3
+
+      - name: Configure CMake
+        run: cmake -B build -S . -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build Release
+        run: cmake --build build --config Release
+
+      - name: Package Windows Binary
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Force -Path "dist/NothingTrack-Windows-x64"
+          Copy-Item "build/Release/NothingTray.exe" -Destination "dist/NothingTrack-Windows-x64/NothingTrack.exe"
+          Copy-Item "assets" -Destination "dist/NothingTrack-Windows-x64/" -Recurse
+          Copy-Item "fonts" -Destination "dist/NothingTrack-Windows-x64/" -Recurse
+          Compress-Archive -Path "dist/NothingTrack-Windows-x64" -DestinationPath "dist/NothingTrack-Windows-x64.zip" -Force
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: NothingTrack-Windows-x64
+          path: dist/NothingTrack-Windows-x64.zip
+
+  build-linux:
+    name: Build Linux x64
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake g++ libbluetooth-dev libglib2.0-dev
+
+      - name: Package Linux Source & Build Guide
+        run: |
+          mkdir -p dist/NothingTrack-Linux-x64
+          cp -r assets fonts dist/NothingTrack-Linux-x64/ || true
+          echo "# NothingTrack Linux Build" > dist/NothingTrack-Linux-x64/README.txt
+          echo "Please build using CMake and GCC with BlueZ libbluetooth-dev installed." >> dist/NothingTrack-Linux-x64/README.txt
+          tar -czvf dist/NothingTrack-Linux-x64.tar.gz -C dist NothingTrack-Linux-x64
+
+      - name: Upload Linux Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: NothingTrack-Linux-x64
+          path: dist/NothingTrack-Linux-x64.tar.gz
