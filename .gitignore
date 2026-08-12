@@ -27,6 +27,9 @@ install_manifest.txt
 *.user
 *.sln.docstates
 
+# Design specs & internal docs
+design-spec*.md
+
 # Temporary logs & OS cache
 *.log
 *.tmp
