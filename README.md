@@ -55,7 +55,7 @@ The executable will be generated at `build/Release/NothingTray.exe`.
 
 ## 📜 Changelog
 
-Detailed release history and protocol updates are recorded in [CHANGELOG.md](CHANGELOG.md).
+Detailed release history and protocol updates are recorded in [RELEASES](https://github.com/lenorio/Nothing-Track/releases)
 
 ---
 
