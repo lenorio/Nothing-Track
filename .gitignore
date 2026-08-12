@@ -1,7 +1,15 @@
 # =========================================================================
-# CMake Build directories and generated files
+# Build directories and generated files
 # =========================================================================
 build/
+bin/
+out/
+Release/
+Debug/
+x64/
+x86/
+
+# CMake generated files
 CMakeLists.txt.user
 CMakeCache.txt
 CMakeFiles/
@@ -11,3 +19,16 @@ CTestTestfile.cmake
 Makefile
 cmake_install.cmake
 install_manifest.txt
+
+# Visual Studio & IDE files
+.vs/
+*.vcxproj.user
+*.suo
+*.user
+*.sln.docstates
+
+# Temporary logs & OS cache
+*.log
+*.tmp
+.DS_Store
+Thumbs.db

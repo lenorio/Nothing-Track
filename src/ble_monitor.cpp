@@ -59,7 +59,9 @@ void BleMonitor::PublishSnapshot(const BatterySnapshot& snapshot) {
 }
 
 void BleMonitor::Run() {
-    init_apartment(apartment_type::multi_threaded);
+    try {
+        init_apartment(apartment_type::multi_threaded);
+    } catch (...) {}
 
     BluetoothLEAdvertisementWatcher watcher;
     watcher.ScanningMode(BluetoothLEScanningMode::Passive);

@@ -36,7 +36,22 @@ void AppendUInt16LE(std::vector<uint8_t>& buffer, uint16_t value) {
 }
 
 std::array<uint8_t, 3> MakeAncPayload(AncMode mode) {
-    return {0x01, static_cast<uint8_t>(mode), 0x00};
+    switch (mode) {
+    case AncMode::Transparency:
+        return {0x02, 0x00, 0x00};
+    case AncMode::Off:
+        return {0x03, 0x00, 0x00};
+    case AncMode::High:
+        return {0x01, 0x01, 0x00};
+    case AncMode::Mid:
+        return {0x01, 0x02, 0x00};
+    case AncMode::Low:
+        return {0x01, 0x03, 0x00};
+    case AncMode::Adaptive:
+        return {0x01, 0x04, 0x00};
+    default:
+        return {0x03, 0x00, 0x00};
+    }
 }
 
 std::array<uint8_t, 2> MakeBassPayload(bool enabled, uint8_t level) {
@@ -47,6 +62,21 @@ std::array<uint8_t, 2> MakeBassPayload(bool enabled, uint8_t level) {
 static void LogDebug(const std::string& text) {
     std::string line = text + "\n";
     OutputDebugStringA(line.c_str());
+
+    try {
+        wchar_t temp_path[MAX_PATH];
+        if (GetTempPathW(MAX_PATH, temp_path) > 0) {
+            std::wstring log_file = std::wstring(temp_path) + L"nothing_tray.log";
+            FILE* f = _wfsopen(log_file.c_str(), L"a", _SH_DENYNO);
+            if (f) {
+                SYSTEMTIME st;
+                GetLocalTime(&st);
+                fprintf(f, "[%02d:%02d:%02d.%03d] %s\n", st.wHour, st.wMinute, st.wSecond, st.wMilliseconds, text.c_str());
+                fflush(f);
+                fclose(f);
+            }
+        }
+    } catch (...) {}
 }
 
 SppClient::~SppClient() {
@@ -80,71 +110,183 @@ bool SppClient::EnsureConnected() {
 }
 
 bool SppClient::Connect() {
-    std::scoped_lock lock(mutex_);
     if (connected_.load(std::memory_order_acquire)) {
         return true;
     }
 
+    LogDebug("SppClient: Searching for paired Bluetooth devices...");
+    
+    // 1. First attempt: standard RfcommDeviceService AQS selector
     try {
-        LogDebug("SppClient: Searching for paired Nothing devices...");
         const auto selector = RfcommDeviceService::GetDeviceSelector(RfcommServiceId::FromUuid(SppUuid()));
         const auto devices = DeviceInformation::FindAllAsync(selector).get();
-        if (devices.Size() == 0) {
-            LogDebug("SppClient: No device matched SPP UUID");
-            return false;
+        if (devices.Size() > 0) {
+            LogDebug("SppClient: Found device via SppUuid AQS selector");
+            const auto device = devices.GetAt(0);
+            auto tmp_service = RfcommDeviceService::FromIdAsync(device.Id()).get();
+            if (tmp_service) {
+                auto tmp_socket = StreamSocket();
+                tmp_socket.Control().KeepAlive(true);
+                tmp_socket.ConnectAsync(
+                    tmp_service.ConnectionHostName(),
+                    tmp_service.ConnectionServiceName(),
+                    SocketProtectionLevel::BluetoothEncryptionAllowNullAuthentication).get();
+
+                {
+                    std::scoped_lock lock(mutex_);
+                    service_ = tmp_service;
+                    socket_ = tmp_socket;
+                    device_name_ = device.Name().c_str();
+                    connected_.store(true, std::memory_order_release);
+                }
+                LogDebug("SppClient: Connection established via AQS!");
+
+                read_active_.store(true, std::memory_order_release);
+                read_thread_ = std::thread([this] { ReaderLoop(); });
+                return true;
+            }
         }
-
-        const auto device = devices.GetAt(0);
-        service_ = RfcommDeviceService::FromIdAsync(device.Id()).get();
-        if (!service_) return false;
-
-        socket_ = StreamSocket();
-        socket_.Control().KeepAlive(true);
-        socket_.ConnectAsync(
-            service_.ConnectionHostName(),
-            service_.ConnectionServiceName(),
-            SocketProtectionLevel::BluetoothEncryptionAllowNullAuthentication).get();
-
-        connected_.store(true, std::memory_order_release);
-        LogDebug("SppClient: Connection established!");
-
-        read_active_.store(true, std::memory_order_release);
-        read_thread_ = std::thread([this] { ReaderLoop(); });
-        return true;
     } catch (const winrt::hresult_error& e) {
-        LogDebug("SppClient: Connection failed: " + winrt::to_string(e.message()));
+        LogDebug("SppClient: AQS selector connect attempt failed: " + winrt::to_string(e.message()) + ". Trying paired devices enumeration...");
+    } catch (const std::exception& e) {
+        LogDebug("SppClient: AQS selector error: " + std::string(e.what()));
+    } catch (...) {
+        LogDebug("SppClient: AQS selector unknown error");
     }
+
+    // 2. Second attempt: Enumerate all paired Bluetooth devices on Windows
+    try {
+        LogDebug("SppClient: Enumerating all paired Bluetooth devices...");
+        auto btSelector = Windows::Devices::Bluetooth::BluetoothDevice::GetDeviceSelectorFromPairingState(true);
+        auto pairedDevices = DeviceInformation::FindAllAsync(btSelector).get();
+        LogDebug("SppClient: Found " + std::to_string(pairedDevices.Size()) + " paired Bluetooth devices.");
+
+        for (uint32_t i = 0; i < pairedDevices.Size(); ++i) {
+            auto devInfo = pairedDevices.GetAt(i);
+            std::string name = winrt::to_string(devInfo.Name());
+
+            std::string lower_name = name;
+            std::transform(lower_name.begin(), lower_name.end(), lower_name.begin(), ::tolower);
+            if (lower_name.find("nothing") == std::string::npos &&
+                lower_name.find("ear") == std::string::npos &&
+                lower_name.find("cmf") == std::string::npos &&
+                lower_name.find("buds") == std::string::npos &&
+                lower_name.find("headphone") == std::string::npos) {
+                LogDebug("SppClient: Skipping non-Nothing device [" + std::to_string(i) + "]: " + name);
+                continue;
+            }
+
+            LogDebug("SppClient: Checking paired device [" + std::to_string(i) + "]: " + name);
+
+            try {
+                auto btDevice = Windows::Devices::Bluetooth::BluetoothDevice::FromIdAsync(devInfo.Id()).get();
+                if (!btDevice) continue;
+
+                // Try SppUuid first with Uncached mode to force SDP record retrieval
+                auto rfResult = btDevice.GetRfcommServicesForIdAsync(
+                    RfcommServiceId::FromUuid(SppUuid()),
+                    Windows::Devices::Bluetooth::BluetoothCacheMode::Uncached
+                ).get();
+
+                if (rfResult.Services().Size() == 0) {
+                    // Try standard SerialPort UUID as fallback
+                    rfResult = btDevice.GetRfcommServicesForIdAsync(
+                        RfcommServiceId::SerialPort(),
+                        Windows::Devices::Bluetooth::BluetoothCacheMode::Uncached
+                    ).get();
+                }
+
+                if (rfResult.Services().Size() > 0) {
+                    LogDebug("SppClient: Found SPP RFCOMM service on device: " + name);
+                    auto tmp_service = rfResult.Services().GetAt(0);
+                    auto tmp_socket = StreamSocket();
+                    tmp_socket.Control().KeepAlive(true);
+                    tmp_socket.ConnectAsync(
+                        tmp_service.ConnectionHostName(),
+                        tmp_service.ConnectionServiceName(),
+                        SocketProtectionLevel::BluetoothEncryptionAllowNullAuthentication).get();
+
+                    {
+                        std::scoped_lock lock(mutex_);
+                        service_ = tmp_service;
+                        socket_ = tmp_socket;
+                        device_name_ = devInfo.Name().c_str();
+                        connected_.store(true, std::memory_order_release);
+                    }
+                    LogDebug("SppClient: Successfully connected to " + name + " via SPP!");
+
+                    read_active_.store(true, std::memory_order_release);
+                    read_thread_ = std::thread([this] { ReaderLoop(); });
+                    return true;
+                }
+            } catch (const winrt::hresult_error& e) {
+                LogDebug("SppClient: RFCOMM check failed for " + name + ": " + winrt::to_string(e.message()));
+            } catch (const std::exception& e) {
+                LogDebug("SppClient: Exception for " + name + ": " + std::string(e.what()));
+            } catch (...) {}
+        }
+    } catch (const winrt::hresult_error& e) {
+        LogDebug("SppClient: Enumeration failed winrt error: " + winrt::to_string(e.message()));
+    } catch (const std::exception& e) {
+        LogDebug("SppClient: Enumeration failed std::exception: " + std::string(e.what()));
+    } catch (...) {}
+
     return false;
 }
 
 bool SppClient::ConnectToAddress(uint64_t bluetooth_address) {
-    std::scoped_lock lock(mutex_);
     if (connected_.load(std::memory_order_acquire)) return true;
     
     try {
         LogDebug("SppClient: Direct RFCOMM Connection to MAC: " + std::to_string(bluetooth_address));
         auto btDevice = Windows::Devices::Bluetooth::BluetoothDevice::FromBluetoothAddressAsync(bluetooth_address).get();
         if (!btDevice) {
-            LogDebug("SppClient: Direct device resolution failed");
+            LogDebug("SppClient: Direct device resolution failed for MAC " + std::to_string(bluetooth_address));
             return false;
         }
 
-        auto rf = btDevice.GetRfcommServicesForIdAsync(RfcommServiceId::FromUuid(SppUuid())).get();
+        // Try SppUuid with Uncached
+        auto rf = btDevice.GetRfcommServicesForIdAsync(
+            RfcommServiceId::FromUuid(SppUuid()),
+            Windows::Devices::Bluetooth::BluetoothCacheMode::Uncached
+        ).get();
+
+        if (rf.Services().Size() == 0) {
+            // Fallback to Cached
+            rf = btDevice.GetRfcommServicesForIdAsync(
+                RfcommServiceId::FromUuid(SppUuid()),
+                Windows::Devices::Bluetooth::BluetoothCacheMode::Cached
+            ).get();
+        }
+
+        if (rf.Services().Size() == 0) {
+            // Fallback to SerialPort UUID
+            rf = btDevice.GetRfcommServicesForIdAsync(
+                RfcommServiceId::SerialPort(),
+                Windows::Devices::Bluetooth::BluetoothCacheMode::Uncached
+            ).get();
+        }
+
         if (rf.Services().Size() == 0) {
             LogDebug("SppClient: Target MAC does not publish SPP profile");
             return false;
         }
 
-        service_ = rf.Services().GetAt(0);
-        socket_ = StreamSocket();
-        socket_.Control().KeepAlive(true);
+        auto tmp_service = rf.Services().GetAt(0);
+        auto tmp_socket = StreamSocket();
+        tmp_socket.Control().KeepAlive(true);
 
-        socket_.ConnectAsync(
-            service_.ConnectionHostName(),
-            service_.ConnectionServiceName(),
+        tmp_socket.ConnectAsync(
+            tmp_service.ConnectionHostName(),
+            tmp_service.ConnectionServiceName(),
             SocketProtectionLevel::BluetoothEncryptionAllowNullAuthentication).get();
 
-        connected_.store(true, std::memory_order_release);
+        {
+            std::scoped_lock lock(mutex_);
+            service_ = tmp_service;
+            socket_ = tmp_socket;
+            connected_.store(true, std::memory_order_release);
+        }
         LogDebug("SppClient: Direct MAC connected successfully!");
 
         read_active_.store(true, std::memory_order_release);
@@ -309,6 +451,17 @@ void SppClient::ReaderLoop() {
 
     LogDebug("SppClient: ReaderLoop exited");
     connected_.store(false, std::memory_order_release);
+    SppUpdateCallback cb;
+    {
+        std::scoped_lock lock(mutex_);
+        cb = callback_;
+    }
+    if (cb) {
+        SppStateUpdate update;
+        update.type = SppStateUpdate::Type::ConnectionState;
+        update.connected = false;
+        cb(update);
+    }
 }
 
 void SppClient::ProcessIncomingPacket(uint16_t command, std::span<const uint8_t> payload) {
@@ -349,20 +502,40 @@ void SppClient::ProcessIncomingPacket(uint16_t command, std::span<const uint8_t>
                 cb(update);
             }
         }
-    } else if (command == 57347 || command == 16414) {
+    } else if (command == 57347 || command == 16414 || command == 28688) {
         // ANC status
-        if (payload.size() >= 2) {
-            AncMode mode = static_cast<AncMode>(payload[1]);
-            SppUpdateCallback cb;
-            {
-                std::scoped_lock lock(mutex_);
-                cb = callback_;
+        if (!payload.empty()) {
+            uint8_t type = payload[0];
+            uint8_t level = (payload.size() >= 2) ? payload[1] : 0x00;
+            AncMode mode = AncMode::High;
+            bool valid = true;
+            if (type == 0x02 || type == 0x05) {
+                mode = AncMode::Transparency;
+            } else if (type == 0x03 || type == 0x07 || type == 0x00) {
+                mode = AncMode::Off;
+            } else if (type == 0x01) {
+                if (level == 0x01) mode = AncMode::High;
+                else if (level == 0x02) mode = AncMode::Mid;
+                else if (level == 0x03) mode = AncMode::Low;
+                else if (level == 0x04) mode = AncMode::Adaptive;
+                else mode = AncMode::High;
+            } else if (type == 0x04) {
+                mode = AncMode::Adaptive;
+            } else {
+                valid = false;
             }
-            if (cb) {
-                SppStateUpdate update;
-                update.type = SppStateUpdate::Type::AncMode;
-                update.anc_mode = mode;
-                cb(update);
+            if (valid) {
+                SppUpdateCallback cb;
+                {
+                    std::scoped_lock lock(mutex_);
+                    cb = callback_;
+                }
+                if (cb) {
+                    SppStateUpdate update;
+                    update.type = SppStateUpdate::Type::AncMode;
+                    update.anc_mode = mode;
+                    cb(update);
+                }
             }
         }
     } else if (command == 16415 || command == 16464) {
@@ -493,17 +666,31 @@ void SppClient::ProcessIncomingPacket(uint16_t command, std::span<const uint8_t>
     }
 }
 
+std::wstring SppClient::GetDeviceName() const {
+    std::scoped_lock lock(mutex_);
+    return device_name_;
+}
+
 bool SppClient::SendPersonalizedAnc(bool enabled) {
     const std::array<uint8_t, 1> payload = {static_cast<uint8_t>(enabled ? 0x01 : 0x00)};
     return SendCommand(61457, payload);
 }
 
 bool SppClient::SendFindMyBuds(bool left, bool active) {
-    const std::array<uint8_t, 2> payload = {
-        static_cast<uint8_t>(left ? 0x02 : 0x03),
-        static_cast<uint8_t>(active ? 0x01 : 0x00)
-    };
-    return SendCommand(61442, payload);
+    LogDebug("SppClient: SendFindMyBuds side=" + std::string(left ? "Left" : "Right") + " active=" + std::to_string(active));
+    uint8_t state_val = active ? 0x01 : 0x00;
+    uint8_t side_1 = left ? 0x01 : 0x02;
+    uint8_t side_2 = left ? 0x02 : 0x03;
+
+    std::array<uint8_t, 3> payload1 = {0x01, side_1, state_val};
+    std::array<uint8_t, 2> payload2 = {side_1, state_val};
+    std::array<uint8_t, 2> payload3 = {side_2, state_val};
+
+    bool ok = SendCommand(61442, payload1);
+    ok |= SendCommand(61442, payload2);
+    ok |= SendCommand(61442, payload3);
+    ok |= SendCommand(61443, payload1);
+    return ok;
 }
 
 bool SppClient::SendLowLatency(bool enabled) {

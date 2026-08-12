@@ -19,6 +19,11 @@
 
 namespace nothing_tray {
 
+enum class AppLanguage {
+    Russian,
+    English,
+};
+
 class TrayApp {
 public:
     enum class EqPreset : uint8_t {
@@ -26,6 +31,7 @@ public:
         MoreBass = 1,
         MoreTreble = 2,
         Voice = 3,
+        Dirac = 4,
     };
 
     TrayApp();
@@ -48,6 +54,11 @@ private:
         kTrayExit = 1002,
         kBatterySmoothingTimerId = 2001,
     };
+
+    AppLanguage language_{AppLanguage::Russian};
+    const wchar_t* Tr(const wchar_t* ru, const wchar_t* en) const {
+        return (language_ == AppLanguage::Russian) ? ru : en;
+    }
 
     void RegisterWindowClasses();
     void CreateHostWindow();
@@ -98,8 +109,8 @@ private:
     NOTIFYICONDATAW tray_data_{};
     HICON current_tray_icon_{nullptr};
 
-    BleMonitor ble_monitor_{};
-    SppClient spp_client_{};
+    std::unique_ptr<BleMonitor> ble_monitor_{nullptr};
+    std::unique_ptr<SppClient> spp_client_{nullptr};
 
     std::mutex state_mutex_{};
     BatterySnapshot snapshot_{};
@@ -121,11 +132,14 @@ private:
 
     // Отрисовка
     ULONG_PTR gdiplus_token_{0};
-    Gdiplus::PrivateFontCollection font_collection_{};
+    Gdiplus::PrivateFontCollection* font_collection_{nullptr};
     Gdiplus::Font* font_heading_{nullptr};
+    Gdiplus::Font* font_serif_{nullptr};
+    Gdiplus::Font* font_title_{nullptr};
     Gdiplus::Font* font_body_{nullptr};
     Gdiplus::Font* font_button_{nullptr};
     Gdiplus::Font* font_small_{nullptr};
+    Gdiplus::Font* font_sub_{nullptr};
     HBRUSH brush_canvas_{nullptr};
     HBRUSH brush_surface_{nullptr};
     HBRUSH brush_surface_elevated_{nullptr};
@@ -148,8 +162,12 @@ private:
     bool IsSwappedAncSku(const std::wstring& sku);
 
     AncMode selected_anc_{AncMode::Transparency};
+    std::chrono::steady_clock::time_point last_user_anc_click_{};
     bool bass_enabled_{true};
     uint8_t bass_level_{3};
+    bool bass_slider_open_{false};
+    bool bass_dragging_{false};
+    int splash_anim_angle_{0};
     bool personalized_anc_{false};
     bool low_latency_enabled_{false};
     EqPreset selected_eq_{EqPreset::Balanced};
@@ -158,6 +176,7 @@ private:
 
     // Сетка разметки
     RECT header_rect_{};
+    RECT hero_card_rect_{};
     RECT device_area_rect_{};
     RECT left_bud_rect_{};
     RECT right_bud_rect_{};
@@ -167,13 +186,17 @@ private:
     RECT eq_card_rect_{};
     RECT anc_toggle_rect_{};
     RECT eq_custom_rect_{};
+    RECT eq_custom_toggle_rect_{};
     RECT low_latency_rect_{};
     RECT minimize_btn_rect_{};
     RECT close_btn_rect_{};
+    RECT lang_btn_rect_{};
 
     std::array<RECT, 3> anc_top_rects_{};
     std::array<RECT, 4> anc_mode_rects_{};
-    std::array<RECT, 4> eq_preset_rects_{};
+    std::array<RECT, 5> eq_preset_rects_{};
+    std::array<RECT, 5> bass_level_rects_{};
+    RECT bass_slider_track_rect_{};
 };
 
 } // namespace nothing_tray

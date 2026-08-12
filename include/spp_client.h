@@ -32,6 +32,7 @@ public:
     bool QueryDeviceState();
  
     void SetUpdateCallback(SppUpdateCallback callback);
+    std::wstring GetDeviceName() const;
     bool SendAnc(AncMode mode);
     bool SendBass(bool enabled, uint8_t level);
     bool SendEq(uint8_t preset_val);
@@ -49,6 +50,7 @@ private:
     void ProcessIncomingPacket(uint16_t command, std::span<const uint8_t> payload);
  
     mutable std::mutex mutex_{};
+    std::wstring device_name_{};
     winrt::Windows::Devices::Bluetooth::Rfcomm::RfcommDeviceService service_{nullptr};
     winrt::Windows::Networking::Sockets::StreamSocket socket_{nullptr};
     std::atomic_bool connected_{false};

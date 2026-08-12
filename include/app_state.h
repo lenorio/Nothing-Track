@@ -94,12 +94,12 @@ inline bool operator!=(const BatterySnapshot& lhs, const BatterySnapshot& rhs) {
 }
 
 enum class AncMode : uint8_t {
-    Transparency = 0x05,
-    Off = 0x07,
-    High = 0x03,
-    Low = 0x01,
-    Mid = 0x02,
-    Adaptive = 0x04,
+    Off = 0,
+    Transparency = 1,
+    High = 2,
+    Mid = 3,
+    Low = 4,
+    Adaptive = 5,
 };
 
 struct SppStateUpdate {
@@ -111,9 +111,11 @@ struct SppStateUpdate {
         FirmwareVersion,
         DeviceModel,
         LowLatency,
+        ConnectionState,
     };
 
     Type type;
+    bool connected{false};
     BatteryReading left{};
     BatteryReading right{};
     BatteryReading case_battery{};
